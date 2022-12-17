@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<UserConfig>
+
+	<Group id="SWL" displayName="Mods.swl_SetWeightLimit">
+		<VisibleVars>
+			<Var id="SWLONOFF" displayName="swl_ONOFFSwitch" displayType="TOGGLE"/>
+			<Var id="SWL" displayName="swl_WeightLimit" displayType="SLIDER;60;5000;494"/>
+		</VisibleVars>
+	</Group>
+
+</UserConfig>
