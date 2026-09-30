@@ -1,0 +1,5 @@
+id=982
+panel_Mods=Mods
+panel_swl_SetWeightLimit=Set Weight Limit
+option_swl_ONOFFSwitch=ON/OFF Switch
+option_swl_WeightLimit=Weight Limit

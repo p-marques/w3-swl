@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swl-release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the triggering commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Publish a new version
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_PROMPT_DISABLED: '1'
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.Numerics
+
+          function ConvertTo-ReleaseVersion {
+              param([string] $Text)
+              if ($Text -cnotmatch '^[0-9]+\.[0-9]+(?:\.[0-9]+)?$') {
+                  throw 'VERSION must contain major.minor or major.minor.patch (for example, 3.0).'
+              }
+              [bigint[]] $parts = @($Text.Split('.') | ForEach-Object { [bigint]::Parse($_) })
+              if ($parts.Count -eq 2) { $parts += [bigint] 0 }
+              return ,$parts
+          }
+
+          function Compare-ReleaseVersion {
+              param([bigint[]] $Left, [bigint[]] $Right)
+              for ($i = 0; $i -lt 3; $i++) {
+                  $comparison = $Left[$i].CompareTo($Right[$i])
+                  if ($comparison -ne 0) { return $comparison }
+              }
+              return 0
+          }
+
+          function Get-GitHubPages {
+              param([string] $Resource)
+              $page = 1
+              do {
+                  $response = & gh api "repos/$env:GITHUB_REPOSITORY/${Resource}?per_page=100&page=$page"
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "GitHub $Resource query failed; release eligibility is unknown. Retry after resolving the API error."
+                  }
+                  $json = $response -join "`n"
+                  if (-not $json.TrimStart().StartsWith('[')) {
+                      throw "Unexpected response to GitHub $Resource query."
+                  }
+                  [object[]] $items = ConvertFrom-Json -InputObject $json
+                  $items
+                  $page++
+              } while ($items.Count -eq 100)
+          }
+
+          $version = [System.IO.File]::ReadAllText((Join-Path $PWD 'VERSION')).Trim()
+          $candidate = ConvertTo-ReleaseVersion $version
+          $tag = "v$version"
+          $releases = @(Get-GitHubPages 'releases')
+          $highest = $null
+          $highestTag = $null
+          foreach ($release in $releases) {
+              # Legacy non-version tags do not participate in numeric ordering.
+              if ($release.tag_name -cnotmatch '^v?([0-9]+\.[0-9]+(?:\.[0-9]+)?)$') { continue }
+              $existing = ConvertTo-ReleaseVersion $Matches[1]
+              if ($release.draft) {
+                  if ((Compare-ReleaseVersion $candidate $existing) -eq 0) {
+                      throw "Unfinished draft '$($release.tag_name)' exists. Review its target and assets, then finish or remove the draft manually before retrying."
+                  }
+                  continue
+              }
+              if ($null -eq $highest -or (Compare-ReleaseVersion $existing $highest) -gt 0) {
+                  $highest = $existing
+                  $highestTag = $release.tag_name
+              }
+          }
+          if ($null -ne $highest -and (Compare-ReleaseVersion $candidate $highest) -le 0) {
+              "Skipping $tag`: VERSION is not higher than published release $highestTag." |
+                  Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              exit 0
+          }
+
+          # Reserve numeric aliases too: v3.0 and v3.0.0 are the same version.
+          foreach ($existingTag in @(Get-GitHubPages 'tags')) {
+              if ($existingTag.name -cnotmatch '^v?([0-9]+\.[0-9]+(?:\.[0-9]+)?)$') { continue }
+              $existing = ConvertTo-ReleaseVersion $Matches[1]
+              if ((Compare-ReleaseVersion $candidate $existing) -eq 0) {
+                  throw "Tag '$($existingTag.name)' already exists without a qualifying published release. Review it manually; this workflow will not reuse, move, or delete tags."
+              }
+          }
+
+          # The builder verifies the allowlist, archive paths and every source hash.
+          & .\scripts\build.ps1
+          $archive = Join-Path $PWD "dist/SetWeightLimit-v$version.zip"
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+              throw "The builder did not produce $archive."
+          }
+
+          # Keep failed uploads unpublished. A leftover draft requires manual review.
+          & gh release create $tag --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Set Weight Limit v$version" --generate-notes --draft
+          if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed. Inspect GitHub for a partial draft or tag before retrying.' }
+          & gh release upload $tag $archive --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed; the release remains a draft. Review it manually before retrying.' }
+          & gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Publication failed. Check the release state on GitHub before retrying.' }
+          "Published $tag from $env:GITHUB_SHA with SetWeightLimit-v$version.zip." |
+              Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append

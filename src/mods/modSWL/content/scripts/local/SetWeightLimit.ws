@@ -1,4 +1,4 @@
-// Set Weight Limit 2.x - 2022, pMarK
+// Set Weight Limit 3.x - 2026, pMarK
 
 class SetWeightLimitManager {
 
@@ -28,4 +28,28 @@ class SetWeightLimitManager {
 
 		return value;
 	}
+}
+
+@addField(W3PlayerWitcher)
+private var setWeightLimitManager : SetWeightLimitManager;
+
+@wrapMethod(W3PlayerWitcher)
+function GetMaxRunEncumbrance(out usesHorseBonus : bool) : float
+{
+	var value : float;
+
+	if (!setWeightLimitManager)
+	{
+		setWeightLimitManager = new SetWeightLimitManager in this;
+		setWeightLimitManager.InitSWL();
+	}
+
+	if (setWeightLimitManager.GetIsModOn())
+	{
+		value = CalculateAttributeValue(GetHorseManager().GetHorseAttributeValue('encumbrance', false));
+		usesHorseBonus = (value > 0);
+		return value + setWeightLimitManager.GetWeightLimit();
+	}
+
+	return wrappedMethod(usesHorseBonus);
 }
